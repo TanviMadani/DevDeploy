@@ -1,0 +1,22 @@
+{
+  "name": "devdeploy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Self-hosted developer deployment platform",
+  "scripts": {
+    "dev": "echo \"DevDeploy development environment\"",
+    "test": "echo \"Tests will be added later\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TanviMadani/DevDeploy.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/TanviMadani/DevDeploy/issues"
+  },
+  "homepage": "https://github.com/TanviMadani/DevDeploy#readme"
+}
