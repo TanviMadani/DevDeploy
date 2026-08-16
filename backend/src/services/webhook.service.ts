@@ -34,22 +34,27 @@ export class WebhookService {
         signatureHeader: string | undefined,
         secret?: string
     ): boolean {
-        const webhookSecret = secret || process.env.GITHUB_WEBHOOK_SECRET?.trim();
+        const rawSecret = secret || process.env.GITHUB_WEBHOOK_SECRET;
 
-        if (!webhookSecret) {
+        if (!rawSecret) {
             console.error("[Webhook] Verification failed: GITHUB_WEBHOOK_SECRET is not configured on server.");
             return false;
         }
 
+        const webhookSecret = rawSecret.replace(/^["']|["']$/g, "").trim();
+
         if (!signatureHeader || typeof signatureHeader !== "string") {
+            console.warn("[Webhook] Missing or invalid signature header:", signatureHeader);
             return false;
         }
 
         if (!signatureHeader.startsWith("sha256=")) {
+            console.warn("[Webhook] Signature does not start with sha256=:", signatureHeader);
             return false;
         }
 
         if (!rawBody) {
+            console.warn("[Webhook] Missing raw request body for signature verification.");
             return false;
         }
 
@@ -62,10 +67,17 @@ export class WebhookService {
             const expectedBuffer = Buffer.from(expectedSignature, "utf8");
 
             if (sigBuffer.length !== expectedBuffer.length) {
+                console.warn(`[Webhook] Signature length mismatch (received ${sigBuffer.length} vs expected ${expectedBuffer.length})`);
                 return false;
             }
 
-            return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+            const isValid = crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+            if (!isValid) {
+                console.warn(
+                    `[Webhook] Signature mismatch.\n  Received: ${signatureHeader.substring(0, 16)}...\n  Expected: ${expectedSignature.substring(0, 16)}...`
+                );
+            }
+            return isValid;
         } catch (error: any) {
             console.error("[Webhook] Signature verification error:", error.message || error);
             return false;
