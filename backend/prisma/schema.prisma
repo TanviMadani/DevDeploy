@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum DeploymentStatus {
+  PENDING
+  BUILDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+model User {
+  id        Int       @id @default(autoincrement())
+  name      String
+  email     String    @unique
+  password  String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  projects  Project[]
+}
+
+model Project {
+  id            Int          @id @default(autoincrement())
+  name          String
+  description   String?
+  repositoryUrl String
+  autoDeploy    Boolean      @default(false)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  userId        Int
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deployments   Deployment[]
+}
+
+model Deployment {
+  id            Int              @id @default(autoincrement())
+  projectId     Int
+  project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  status        DeploymentStatus @default(PENDING)
+  commitHash    String?
+  branch        String?
+  runtimePort   Int?
+  deploymentUrl String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  logs          DeploymentLog[]
+}
+
+model DeploymentLog {
+  id           Int        @id @default(autoincrement())
+  deploymentId Int
+  deployment   Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  message      String
+  createdAt    DateTime   @default(now())
+}

@@ -5,6 +5,7 @@
   "description": "Self-hosted developer deployment platform",
   "scripts": {
     "dev": "echo \"DevDeploy development environment\"",
+    "webhook:signature": "npm --prefix backend run webhook:signature",
     "test": "echo \"Tests will be added later\""
   },
   "repository": {
