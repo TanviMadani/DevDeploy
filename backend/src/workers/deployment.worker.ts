@@ -1,6 +1,8 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+import path from "path";
+import fs from "fs";
 import { Worker, Job } from "bullmq";
 import { createRedisConnection } from "../config/redis";
 import { prisma } from "../config/prisma";
@@ -10,6 +12,38 @@ import { gitService, sanitizeLog } from "../services/git.service";
 import { buildService } from "../services/build.service";
 import { runtimeService } from "../services/runtime.service";
 import { portService } from "../services/port.service";
+
+/**
+ * Resolves and securely validates the deployment working directory based on the project rootDirectory.
+ * Prevents path traversal outside the cloned workspace root.
+ */
+export function resolveDeploymentDirectory(repoRoot: string, rootDirectory?: string | null): string {
+    if (!rootDirectory || rootDirectory.trim().length === 0) {
+        return repoRoot;
+    }
+
+    const trimmed = rootDirectory.trim();
+    // Resolve target path relative to repoRoot
+    const targetPath = path.resolve(repoRoot, trimmed);
+    const relative = path.relative(repoRoot, targetPath);
+
+    // Path traversal check: must not escape repoRoot (relative path starts with '..' or is absolute path outside)
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+        throw new Error(`Invalid rootDirectory '${trimmed}': directory traversal outside repository workspace is not allowed.`);
+    }
+
+    // Verify existence
+    if (!fs.existsSync(targetPath)) {
+        throw new Error(`Configured rootDirectory '${trimmed}' does not exist in the repository.`);
+    }
+
+    const stat = fs.statSync(targetPath);
+    if (!stat.isDirectory()) {
+        throw new Error(`Configured rootDirectory '${trimmed}' is not a directory.`);
+    }
+
+    return targetPath;
+}
 
 /**
  * Persists a log entry for a specific deployment in the database.
@@ -36,12 +70,12 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
         const { deploymentId } = job.data;
 
         if (!deploymentId || typeof deploymentId !== "number") {
-            console.error(`[Worker] Job ${job.id} skipped: invalid or missing deploymentId`);
-            return;
+            console.warn(`[Worker] Job ${job.id} skipped: invalid or missing deploymentId`);
+            return { skipped: true, reason: "invalid or missing deploymentId" };
         }
 
         console.log(`[Worker] Starting deployment job for deployment ID: ${deploymentId}`);
-        let workDir: string | null = null;
+        let repoRoot: string | null = null;
         let allocatedPort: number | null = null;
         let isRunning = false;
 
@@ -53,8 +87,8 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
             });
 
             if (!deployment) {
-                console.error(`[Worker] Deployment with ID ${deploymentId} not found in database`);
-                return;
+                console.warn(`[Worker] Deployment with ID ${deploymentId} not found in database (job skipped)`);
+                return { skipped: true, reason: `Deployment with ID ${deploymentId} not found in database` };
             }
 
             // Log: deployment started
@@ -81,12 +115,26 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
                 },
             });
 
-            workDir = checkoutResult.workDir;
+            repoRoot = checkoutResult.workDir;
 
-            // Stage 2: Perform application build (inspect, install dependencies, run build script)
+            // Resolve effective working directory from project rootDirectory setting
+            const effectiveWorkDir = resolveDeploymentDirectory(
+                repoRoot,
+                deployment.project.rootDirectory
+            );
+
+            if (deployment.project.rootDirectory && deployment.project.rootDirectory.trim().length > 0) {
+                await addDeploymentLog(
+                    deploymentId,
+                    `Using configured rootDirectory: '${deployment.project.rootDirectory.trim()}'`
+                );
+            }
+
+            // Stage 2: Perform application build (inspect, install dependencies, run build step)
             await buildService.buildProject({
                 deploymentId,
-                workDir,
+                workDir: effectiveWorkDir,
+                buildCommand: deployment.project.buildCommand,
                 onLog: async (message: string) => {
                     await addDeploymentLog(deploymentId, message);
                 },
@@ -107,8 +155,10 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
             await runtimeService.startApplication({
                 deploymentId,
                 projectId: deployment.projectId,
-                workDir,
+                workDir: effectiveWorkDir,
+                repoRoot,
                 port: allocatedPort,
+                startCommand: deployment.project.startCommand,
                 onLog: async (message: string) => {
                     await addDeploymentLog(deploymentId, message);
                 },
@@ -165,8 +215,8 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
             throw new Error(sanitizedError);
         } finally {
             // Clean up temporary workspace directory ONLY if the process is not actively running
-            if (workDir && !isRunning) {
-                await gitService.cleanupWorkingDirectory(workDir);
+            if (repoRoot && !isRunning) {
+                await gitService.cleanupWorkingDirectory(repoRoot);
             }
         }
     },
@@ -176,8 +226,12 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
     }
 );
 
-deploymentWorker.on("completed", (job: Job) => {
-    console.log(`[Worker] Job ${job.id} completed successfully`);
+deploymentWorker.on("completed", (job: Job, returnvalue: any) => {
+    if (returnvalue && returnvalue.skipped) {
+        console.log(`[Worker] Job ${job.id} skipped: ${returnvalue.reason}`);
+    } else {
+        console.log(`[Worker] Job ${job.id} completed successfully`);
+    }
 });
 
 deploymentWorker.on("failed", (job: Job | undefined, err: Error) => {

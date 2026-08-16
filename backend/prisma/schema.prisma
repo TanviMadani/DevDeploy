@@ -30,6 +30,9 @@ model Project {
   description   String?
   repositoryUrl String
   autoDeploy    Boolean      @default(false)
+  buildCommand  String?
+  startCommand  String?
+  rootDirectory String?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
   userId        Int

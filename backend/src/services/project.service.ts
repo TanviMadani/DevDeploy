@@ -16,6 +16,9 @@ export interface CreateProjectInput {
     repositoryUrl: string;
     userId: number;
     autoDeploy?: boolean;
+    buildCommand?: string | null;
+    startCommand?: string | null;
+    rootDirectory?: string | null;
 }
 
 export interface UpdateProjectInput {
@@ -23,6 +26,9 @@ export interface UpdateProjectInput {
     description?: string | null;
     repositoryUrl?: string;
     autoDeploy?: boolean;
+    buildCommand?: string | null;
+    startCommand?: string | null;
+    rootDirectory?: string | null;
 }
 
 export class ProjectService {
@@ -30,7 +36,7 @@ export class ProjectService {
      * Creates a new project for the specified user.
      */
     async createProject(input: CreateProjectInput) {
-        const { name, description, repositoryUrl, userId, autoDeploy } = input;
+        const { name, description, repositoryUrl, userId, autoDeploy, buildCommand, startCommand, rootDirectory } = input;
 
         const project = await prisma.project.create({
             data: {
@@ -39,6 +45,9 @@ export class ProjectService {
                 repositoryUrl: repositoryUrl.trim(),
                 userId,
                 ...(autoDeploy !== undefined ? { autoDeploy: Boolean(autoDeploy) } : {}),
+                buildCommand: buildCommand !== undefined && buildCommand !== null ? (buildCommand.trim().length > 0 ? buildCommand.trim() : null) : null,
+                startCommand: startCommand !== undefined && startCommand !== null ? (startCommand.trim().length > 0 ? startCommand.trim() : null) : null,
+                rootDirectory: rootDirectory !== undefined && rootDirectory !== null ? (rootDirectory.trim().length > 0 ? rootDirectory.trim() : null) : null,
             },
         });
 
@@ -89,6 +98,9 @@ export class ProjectService {
             description?: string | null;
             repositoryUrl?: string;
             autoDeploy?: boolean;
+            buildCommand?: string | null;
+            startCommand?: string | null;
+            rootDirectory?: string | null;
         } = {};
 
         if (input.name !== undefined) {
@@ -105,6 +117,24 @@ export class ProjectService {
 
         if (input.autoDeploy !== undefined) {
             dataToUpdate.autoDeploy = Boolean(input.autoDeploy);
+        }
+
+        if (input.buildCommand !== undefined) {
+            dataToUpdate.buildCommand = input.buildCommand !== null && input.buildCommand.trim().length > 0
+                ? input.buildCommand.trim()
+                : null;
+        }
+
+        if (input.startCommand !== undefined) {
+            dataToUpdate.startCommand = input.startCommand !== null && input.startCommand.trim().length > 0
+                ? input.startCommand.trim()
+                : null;
+        }
+
+        if (input.rootDirectory !== undefined) {
+            dataToUpdate.rootDirectory = input.rootDirectory !== null && input.rootDirectory.trim().length > 0
+                ? input.rootDirectory.trim()
+                : null;
         }
 
         const updated = await prisma.project.update({

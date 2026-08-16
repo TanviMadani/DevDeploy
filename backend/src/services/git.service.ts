@@ -22,20 +22,78 @@ export interface CheckoutResult {
 }
 
 /**
- * Strips sensitive tokens and credentials from logs or error messages.
+ * Strips sensitive tokens, credentials, and environment secrets from logs or error messages.
  */
 export function sanitizeLog(text: string): string {
     if (!text || typeof text !== "string") return text;
 
-    const token = process.env.GITHUB_TOKEN?.trim();
     let sanitized = text;
 
-    if (token && token.length > 0) {
-        sanitized = sanitized.split(token).join("[REDACTED]");
+    // 1. Redact credentials in connection URLs (e.g. postgresql://user:pass@host, redis://:pass@host, http://user:pass@host)
+    sanitized = sanitized.replace(/([a-zA-Z0-9+.-]+:\/\/)[^/@\s]+@/g, "$1[REDACTED]@");
+
+    // 2. Redact sensitive values from environment variables
+    const sensitiveKeyPatterns = [
+        "SECRET",
+        "TOKEN",
+        "PASSWORD",
+        "PASSWD",
+        "AUTH",
+        "CREDENTIAL",
+        "PRIVATE_KEY",
+        "API_KEY",
+        "APIKEY",
+        "DATABASE_URL",
+        "REDIS_URL",
+    ];
+
+    for (const key of Object.keys(process.env)) {
+        const upper = key.toUpperCase();
+        const isSensitive = sensitiveKeyPatterns.some((pattern) => upper.includes(pattern));
+
+        if (isSensitive) {
+            const rawVal = process.env[key]?.trim();
+            if (rawVal && rawVal.length >= 6) {
+                // If it's a URL like postgresql://user:pass@host, extract password part
+                const urlMatch = rawVal.match(/^[a-zA-Z0-9+.-]+:\/\/([^/@\s]+)@/);
+                if (urlMatch && urlMatch[1]) {
+                    const creds = urlMatch[1];
+                    const colonIndex = creds.indexOf(":");
+                    if (colonIndex !== -1) {
+                        const pass = creds.substring(colonIndex + 1);
+                        if (pass.length >= 4) {
+                            sanitized = sanitized.split(pass).join("[REDACTED]");
+                            try {
+                                const decodedPass = decodeURIComponent(pass);
+                                if (decodedPass !== pass && decodedPass.length >= 4) {
+                                    sanitized = sanitized.split(decodedPass).join("[REDACTED]");
+                                }
+                            } catch {
+                                // Ignore decode error
+                            }
+                        }
+                    }
+                }
+
+                // Redact the raw value itself
+                sanitized = sanitized.split(rawVal).join("[REDACTED]");
+
+                // Redact decoded/encoded variations if applicable
+                try {
+                    const decoded = decodeURIComponent(rawVal);
+                    if (decoded !== rawVal && decoded.length >= 6) {
+                        sanitized = sanitized.split(decoded).join("[REDACTED]");
+                    }
+                } catch {
+                    // Ignore decode error
+                }
+            }
+        }
     }
 
-    // Also strip generic basic auth formats in URLs (e.g. https://user:pass@...)
-    sanitized = sanitized.replace(/(https?:\/\/)[^/@\s]+@/g, "$1[REDACTED]@");
+    // 3. Redact Authorization headers or Bearer tokens in text
+    sanitized = sanitized.replace(/(Authorization:\s*(?:Bearer|Basic|Token)\s+)[^\r\n\s]+/gi, "$1[REDACTED]");
+    sanitized = sanitized.replace(/((?:bearer|token)\s+)[a-zA-Z0-9_.~+\/=-]{16,}/gi, "$1[REDACTED]");
 
     return sanitized;
 }

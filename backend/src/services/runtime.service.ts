@@ -8,7 +8,9 @@ export interface StartApplicationOptions {
     deploymentId: number;
     projectId: number;
     workDir: string;
+    repoRoot?: string;
     port: number;
+    startCommand?: string | null;
     onLog?: (message: string) => Promise<void> | void;
 }
 
@@ -18,6 +20,7 @@ export interface RunningProcessInfo {
     pid: number;
     port: number;
     workDir: string;
+    repoRoot?: string;
     process: ChildProcess;
     startedAt: Date;
 }
@@ -29,21 +32,25 @@ export class RuntimeService {
     /**
      * Inspects package.json to verify and retrieve the start script command.
      */
-    async getStartScript(workDir: string): Promise<string> {
+    async getStartScript(workDir: string): Promise<string | null> {
         const packageJsonPath = path.join(workDir, "package.json");
 
         if (!fs.existsSync(packageJsonPath)) {
-            throw new Error("Cannot start application: package.json not found in workspace.");
+            return null;
         }
 
-        const content = await fs.promises.readFile(packageJsonPath, "utf-8");
-        const parsed = JSON.parse(content);
+        try {
+            const content = await fs.promises.readFile(packageJsonPath, "utf-8");
+            const parsed = JSON.parse(content);
 
-        if (!parsed.scripts || !parsed.scripts.start || typeof parsed.scripts.start !== "string") {
-            throw new Error("Cannot start application: no 'start' script defined in package.json.");
+            if (parsed.scripts && parsed.scripts.start && typeof parsed.scripts.start === "string") {
+                return parsed.scripts.start.trim();
+            }
+        } catch {
+            return null;
         }
 
-        return parsed.scripts.start.trim();
+        return null;
     }
 
     /**
@@ -108,7 +115,7 @@ export class RuntimeService {
      * verifies HTTP health, and registers the active process.
      */
     async startApplication(options: StartApplicationOptions): Promise<RunningProcessInfo> {
-        const { deploymentId, projectId, workDir, port, onLog } = options;
+        const { deploymentId, projectId, workDir, repoRoot, port, startCommand, onLog } = options;
 
         const log = async (msg: string) => {
             console.log(`[RuntimeService] [Deployment ${deploymentId}] ${msg}`);
@@ -117,24 +124,47 @@ export class RuntimeService {
             }
         };
 
-        // 1. Verify start script presence
-        const startScript = await this.getStartScript(workDir);
-        await log(`Detected start script: "${startScript}". Initializing runtime on port ${port}...`);
-
-        // 2. Spawn child process with PORT environment variable
         const isWindows = process.platform === "win32";
-        const executable = isWindows ? "npm.cmd" : "npm";
+        let child: ChildProcess;
+        const customStart = startCommand?.trim();
 
-        const child = spawn(executable, ["start"], {
-            cwd: workDir,
-            windowsHide: true,
-            shell: isWindows,
-            env: {
-                ...process.env,
-                PORT: String(port),
-                NODE_ENV: "production",
-            },
-        });
+        // 1. Determine execution strategy: configured startCommand vs package.json "start" script
+        if (customStart && customStart.length > 0) {
+            await log(`Starting application using configured start command: "${customStart}" on port ${port}...`);
+
+            child = spawn(customStart, {
+                cwd: workDir,
+                windowsHide: true,
+                shell: true,
+                env: {
+                    ...process.env,
+                    PORT: String(port),
+                    NODE_ENV: "production",
+                },
+            });
+        } else {
+            const startScript = await this.getStartScript(workDir);
+
+            if (!startScript) {
+                const failMsg = "Cannot start application: no startCommand configured on project and no 'start' script found in package.json.";
+                await log(failMsg);
+                throw new Error(failMsg);
+            }
+
+            await log(`Detected start script: "${startScript}". Initializing runtime on port ${port}...`);
+
+            const executable = isWindows ? "npm.cmd" : "npm";
+            child = spawn(executable, ["start"], {
+                cwd: workDir,
+                windowsHide: true,
+                shell: isWindows,
+                env: {
+                    ...process.env,
+                    PORT: String(port),
+                    NODE_ENV: "production",
+                },
+            });
+        }
 
         if (!child.pid) {
             throw new Error("Failed to spawn application process: no PID assigned by operating system.");
@@ -143,7 +173,7 @@ export class RuntimeService {
         const pid = child.pid;
         await log(`Application process spawned with PID ${pid} on port ${port}.`);
 
-        // 3. Attach log listeners with throttling
+        // 2. Attach log listeners with throttling
         let logCountInWindow = 0;
         let lastLogReset = Date.now();
 
@@ -182,7 +212,7 @@ export class RuntimeService {
             log(`Runtime process (PID: ${pid}) exited with code ${code ?? 0}${signal ? `, signal ${signal}` : ""}.`);
         });
 
-        // 4. Perform health check verification
+        // 3. Perform health check verification
         try {
             await this.waitForHealthCheck(port, child, 30000, onLog);
         } catch (healthError: any) {
@@ -199,6 +229,7 @@ export class RuntimeService {
             pid,
             port,
             workDir,
+            repoRoot: repoRoot || workDir,
             process: child,
             startedAt: new Date(),
         };
@@ -241,8 +272,9 @@ export class RuntimeService {
             this.runningProcesses.delete(deploymentId);
             portService.releasePort(info.port);
 
-            if (info.workDir) {
-                await gitService.cleanupWorkingDirectory(info.workDir);
+            const cleanupTarget = info.repoRoot || info.workDir;
+            if (cleanupTarget) {
+                await gitService.cleanupWorkingDirectory(cleanupTarget);
             }
         }
     }

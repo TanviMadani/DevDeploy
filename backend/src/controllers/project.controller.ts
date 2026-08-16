@@ -27,7 +27,7 @@ export class ProjectController {
                 return;
             }
 
-            const { name, description, repositoryUrl, autoDeploy } = req.body;
+            const { name, description, repositoryUrl, autoDeploy, buildCommand, startCommand, rootDirectory } = req.body;
 
             if (!name || typeof name !== "string" || name.trim().length === 0) {
                 res.status(400).json({
@@ -57,12 +57,36 @@ export class ProjectController {
                 return;
             }
 
+            if (buildCommand !== undefined && buildCommand !== null && typeof buildCommand !== "string") {
+                res.status(400).json({
+                    message: "buildCommand must be a string or null if provided.",
+                });
+                return;
+            }
+
+            if (startCommand !== undefined && startCommand !== null && typeof startCommand !== "string") {
+                res.status(400).json({
+                    message: "startCommand must be a string or null if provided.",
+                });
+                return;
+            }
+
+            if (rootDirectory !== undefined && rootDirectory !== null && typeof rootDirectory !== "string") {
+                res.status(400).json({
+                    message: "rootDirectory must be a string or null if provided.",
+                });
+                return;
+            }
+
             const project = await projectService.createProject({
                 name,
                 description,
                 repositoryUrl,
                 userId,
                 autoDeploy,
+                buildCommand,
+                startCommand,
+                rootDirectory,
             });
 
             res.status(201).json({
@@ -185,17 +209,20 @@ export class ProjectController {
                 return;
             }
 
-            const { name, description, repositoryUrl, autoDeploy } = req.body;
+            const { name, description, repositoryUrl, autoDeploy, buildCommand, startCommand, rootDirectory } = req.body;
 
             if (
                 name === undefined &&
                 description === undefined &&
                 repositoryUrl === undefined &&
-                autoDeploy === undefined
+                autoDeploy === undefined &&
+                buildCommand === undefined &&
+                startCommand === undefined &&
+                rootDirectory === undefined
             ) {
                 res.status(400).json({
                     message:
-                        "At least one field (name, description, repositoryUrl, or autoDeploy) must be provided for update.",
+                        "At least one field (name, description, repositoryUrl, autoDeploy, buildCommand, startCommand, or rootDirectory) must be provided for update.",
                 });
                 return;
             }
@@ -228,11 +255,35 @@ export class ProjectController {
                 return;
             }
 
+            if (buildCommand !== undefined && buildCommand !== null && typeof buildCommand !== "string") {
+                res.status(400).json({
+                    message: "buildCommand must be a string or null if provided.",
+                });
+                return;
+            }
+
+            if (startCommand !== undefined && startCommand !== null && typeof startCommand !== "string") {
+                res.status(400).json({
+                    message: "startCommand must be a string or null if provided.",
+                });
+                return;
+            }
+
+            if (rootDirectory !== undefined && rootDirectory !== null && typeof rootDirectory !== "string") {
+                res.status(400).json({
+                    message: "rootDirectory must be a string or null if provided.",
+                });
+                return;
+            }
+
             const project = await projectService.updateProject(projectId, userId, {
                 name,
                 description,
                 repositoryUrl,
                 autoDeploy,
+                buildCommand,
+                startCommand,
+                rootDirectory,
             });
 
             res.status(200).json({

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "worker": "tsx src/workers/deployment.worker.ts",
-    "test": "tsx tests/webhook.test.ts",
+    "test": "tsx tests/webhook.test.ts && tsx tests/project-config.test.ts && tsx tests/build-service.test.ts",
     "webhook:signature": "tsx scripts/generate-github-signature.ts",
     "build": "tsc",
     "start": "node dist/server.js",
