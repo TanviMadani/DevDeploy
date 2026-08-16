@@ -126,6 +126,27 @@ async function runBuildServiceTests() {
             successLogs.some((l) => l.includes("Application build completed successfully.")),
             "Scenario 5b: Successful build logs completion message"
         );
+        // Test 6: Verify build command runs without NODE_ENV=production
+        const envLogs: string[] = [];
+        let envError: Error | null = null;
+        try {
+            await buildService.buildProject({
+                deploymentId: 103,
+                workDir: tempDir,
+                buildCommand: "node -e \"if (process.env.NODE_ENV === 'production') process.exit(1); console.log('Env check: OK');\"",
+                onLog: (msg) => {
+                    envLogs.push(msg);
+                },
+            });
+        } catch (err: any) {
+            envError = err;
+        }
+
+        assert(envError === null, "Scenario 6a: Build environment does not force NODE_ENV=production");
+        assert(
+            envLogs.some((l) => l.includes("Env check: OK")),
+            "Scenario 6b: Custom build command executes with development-ready environment"
+        );
 
     } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });

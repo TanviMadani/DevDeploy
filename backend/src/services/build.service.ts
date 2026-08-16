@@ -33,15 +33,17 @@ export class BuildService {
             let stderr = "";
             let timeoutHandle: NodeJS.Timeout | null = null;
 
+            const buildEnv: NodeJS.ProcessEnv = {
+                ...process.env,
+                CI: "true",
+            };
+            delete buildEnv.NODE_ENV;
+
             const child = spawn(executable, args, {
                 cwd,
                 windowsHide: true,
                 shell: isWindows,
-                env: {
-                    ...process.env,
-                    CI: "true",
-                    NODE_ENV: "production",
-                },
+                env: buildEnv,
             });
 
             if (timeoutMs > 0) {
@@ -105,15 +107,17 @@ export class BuildService {
             let stderr = "";
             let timeoutHandle: NodeJS.Timeout | null = null;
 
+            const buildEnv: NodeJS.ProcessEnv = {
+                ...process.env,
+                CI: "true",
+            };
+            delete buildEnv.NODE_ENV;
+
             const child = spawn(commandLine, {
                 cwd,
                 windowsHide: true,
                 shell: true,
-                env: {
-                    ...process.env,
-                    CI: "true",
-                    NODE_ENV: "production",
-                },
+                env: buildEnv,
             });
 
             if (timeoutMs > 0) {
