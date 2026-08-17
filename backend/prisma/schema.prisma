@@ -36,8 +36,21 @@ model Project {
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
   userId        Int
-  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   deployments   Deployment[]
+  envVars       EnvironmentVariable[]
+}
+
+model EnvironmentVariable {
+  id        Int      @id @default(autoincrement())
+  key       String
+  value     String
+  projectId Int
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, key])
 }
 
 model Deployment {

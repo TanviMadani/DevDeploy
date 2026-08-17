@@ -17,8 +17,10 @@ deploymentRouter.use(authenticateToken);
 deploymentRouter.get("/:id", (req, res) => deploymentController.getDeploymentById(req, res));
 deploymentRouter.get("/:id/status", (req, res) => deploymentController.getDeploymentStatus(req, res));
 deploymentRouter.get("/:id/logs", (req, res) => deploymentController.getDeploymentLogs(req, res));
+deploymentRouter.get("/:id/logs/stream", (req, res) => deploymentController.streamDeploymentLogs(req, res));
 deploymentRouter.patch("/:id/status", (req, res) => deploymentController.updateDeploymentStatus(req, res));
 deploymentRouter.post("/:id/stop", (req, res) => deploymentController.stopDeployment(req, res));
+deploymentRouter.post("/:id/rollback", (req, res) => deploymentController.rollbackDeployment(req, res));
 
 export default deploymentRouter;
 

@@ -7,6 +7,7 @@ import projectRoutes from "./routes/project.routes";
 import { deploymentRouter } from "./routes/deployment.routes";
 import githubRoutes from "./routes/github.routes";
 import webhookRoutes from "./routes/webhook.routes";
+import { createLiveProxyHandler } from "./middleware/proxy.middleware";
 
 dotenv.config();
 
@@ -15,6 +16,10 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(cors());
+
+// Clean URL reverse proxy to live deployed project ports
+app.use("/live", createLiveProxyHandler);
+
 app.use(
     express.json({
         verify: (req: any, _res, buf) => {

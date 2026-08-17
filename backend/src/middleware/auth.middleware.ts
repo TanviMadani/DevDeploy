@@ -23,20 +23,18 @@ export const authenticateToken = (
     res: Response,
     next: NextFunction
 ): void => {
+    let token: string | undefined;
     const authHeader = req.headers.authorization;
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        res.status(401).json({
-            message: "Authorization token missing or malformed",
-        });
-        return;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+        token = authHeader.split(" ")[1];
+    } else if (req.query && typeof req.query.token === "string") {
+        token = req.query.token;
     }
-
-    const token = authHeader.split(" ")[1];
 
     if (!token) {
         res.status(401).json({
-            message: "Authorization token missing",
+            message: "Authorization token missing or malformed",
         });
         return;
     }

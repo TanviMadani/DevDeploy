@@ -7,6 +7,7 @@ export interface BuildOptions {
     deploymentId: number;
     workDir: string;
     buildCommand?: string | null;
+    envVars?: Record<string, string>;
     onLog?: (message: string) => Promise<void> | void;
 }
 
@@ -19,6 +20,7 @@ export class BuildService {
         args: string[],
         cwd: string,
         onLog?: (message: string) => Promise<void> | void,
+        envVars?: Record<string, string>,
         timeoutMs: number = 300000 // 5 minutes default timeout
     ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
         return new Promise((resolve, reject) => {
@@ -35,6 +37,7 @@ export class BuildService {
 
             const buildEnv: NodeJS.ProcessEnv = {
                 ...process.env,
+                ...(envVars || {}),
                 CI: "true",
             };
             delete buildEnv.NODE_ENV;
@@ -98,6 +101,7 @@ export class BuildService {
         commandLine: string,
         cwd: string,
         onLog?: (message: string) => Promise<void> | void,
+        envVars?: Record<string, string>,
         timeoutMs: number = 300000 // 5 minutes default timeout
     ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
         return new Promise((resolve, reject) => {
@@ -109,6 +113,7 @@ export class BuildService {
 
             const buildEnv: NodeJS.ProcessEnv = {
                 ...process.env,
+                ...(envVars || {}),
                 CI: "true",
             };
             delete buildEnv.NODE_ENV;
@@ -194,7 +199,7 @@ export class BuildService {
      * Inspects the project in workDir, installs dependencies, and runs the build script.
      */
     async buildProject(options: BuildOptions): Promise<void> {
-        const { deploymentId, workDir, buildCommand, onLog } = options;
+        const { deploymentId, workDir, buildCommand, envVars, onLog } = options;
 
         const log = async (msg: string) => {
             console.log(`[BuildService] [Deployment ${deploymentId}] ${msg}`);
@@ -204,9 +209,14 @@ export class BuildService {
         };
 
         const packageJsonPath = path.join(workDir, "package.json");
+        const indexHtmlPath = path.join(workDir, "index.html");
 
         if (!fs.existsSync(packageJsonPath)) {
-            const msg = "Project inspection failed: no package.json found in workspace directory.";
+            if (fs.existsSync(indexHtmlPath)) {
+                await log("Inspected project: static HTML site detected (no package.json). Skipping build step.");
+                return;
+            }
+            const msg = `Project inspection failed: no package.json found in '${workDir}'.`;
             await log(msg);
             throw new Error(msg);
         }
@@ -232,7 +242,7 @@ export class BuildService {
         await log(`Installing dependencies using '${installCmdName}'...`);
 
         try {
-            const installResult = await this.runCommand("npm", installArgs, workDir, onLog);
+            const installResult = await this.runCommand("npm", installArgs, workDir, onLog, envVars);
 
             if (installResult.exitCode !== 0) {
                 const failedLog = this.formatFailedCommandLog(
@@ -277,7 +287,7 @@ export class BuildService {
             await log(`Running custom build command: '${customBuild}'...`);
 
             try {
-                const buildResult = await this.runShellCommand(customBuild, workDir, onLog);
+                const buildResult = await this.runShellCommand(customBuild, workDir, onLog, envVars);
 
                 if (buildResult.exitCode !== 0) {
                     const failedLog = this.formatFailedCommandLog(
@@ -327,7 +337,7 @@ export class BuildService {
             await log("Running build script: 'npm run build'...");
 
             try {
-                const buildResult = await this.runCommand("npm", ["run", "build"], workDir, onLog);
+                const buildResult = await this.runCommand("npm", ["run", "build"], workDir, onLog, envVars);
 
                 if (buildResult.exitCode !== 0) {
                     const failedLog = this.formatFailedCommandLog(

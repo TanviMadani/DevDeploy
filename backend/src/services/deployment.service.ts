@@ -86,10 +86,19 @@ export class DeploymentService {
         }
 
         const { owner, repo } = githubService.parseRepositoryUrl(project.repositoryUrl);
-        const repoInfo = await githubService.getRepositoryInfo(owner, repo);
-        const defaultBranch = repoInfo.default_branch || "main";
+        let defaultBranch = "main";
+        let latestCommitSha: string | null = null;
 
-        const latestCommitSha = await githubService.getLatestCommitSha(owner, repo, defaultBranch);
+        try {
+            const repoInfo = await githubService.getRepositoryInfo(owner, repo);
+            defaultBranch = repoInfo.default_branch || "main";
+            latestCommitSha = await githubService.getLatestCommitSha(owner, repo, defaultBranch);
+        } catch (error: any) {
+            if (error instanceof GitHubError && error.statusCode === 404) {
+                throw error;
+            }
+            console.warn(`[DeploymentService] GitHub API unavailable (${error.message}). Falling back to default branch '${defaultBranch}'.`);
+        }
 
         const deployment = await prisma.deployment.create({
             data: {
@@ -133,6 +142,45 @@ export class DeploymentService {
         }
 
         return deployment;
+    }
+
+    /**
+     * Rolls back a project to a specific previous deployment version:
+     * - Verifies project ownership
+     * - Finds target deployment record
+     * - Creates a new Deployment with target commitHash and branch
+     * - Enqueues deployment job
+     */
+    async rollbackDeployment(targetDeploymentId: number, userId: number) {
+        const target = await prisma.deployment.findUnique({
+            where: { id: targetDeploymentId },
+            include: { project: true },
+        });
+
+        if (!target) {
+            throw new DeploymentError("Target deployment to rollback to not found", 404);
+        }
+
+        if (target.project.userId !== userId) {
+            throw new DeploymentError("Unauthorized to rollback this project", 403);
+        }
+
+        const newDeployment = await prisma.deployment.create({
+            data: {
+                projectId: target.projectId,
+                status: DeploymentStatus.PENDING,
+                commitHash: target.commitHash,
+                branch: target.branch,
+            },
+        });
+
+        try {
+            await queueDeployment(newDeployment.id);
+        } catch (queueError: any) {
+            console.error(`[DeploymentService] Failed to enqueue rollback job ${newDeployment.id}:`, queueError.message || queueError);
+        }
+
+        return newDeployment;
     }
 
     /**

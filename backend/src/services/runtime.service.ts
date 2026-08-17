@@ -11,6 +11,7 @@ export interface StartApplicationOptions {
     repoRoot?: string;
     port: number;
     startCommand?: string | null;
+    envVars?: Record<string, string>;
     onLog?: (message: string) => Promise<void> | void;
 }
 
@@ -54,6 +55,25 @@ export class RuntimeService {
     }
 
     /**
+     * Checks if directory has a built static single-page app (e.g. dist/index.html or build/index.html).
+     */
+    getStaticBuildDir(workDir: string): string | null {
+        if (fs.existsSync(path.join(workDir, "dist", "index.html"))) {
+            return "dist";
+        }
+        if (fs.existsSync(path.join(workDir, "build", "index.html"))) {
+            return "build";
+        }
+        if (fs.existsSync(path.join(workDir, "out", "index.html"))) {
+            return "out";
+        }
+        if (fs.existsSync(path.join(workDir, "public", "index.html"))) {
+            return "public";
+        }
+        return null;
+    }
+
+    /**
      * Performs retry-based HTTP health checks against the running process.
      */
     private async waitForHealthCheck(
@@ -84,14 +104,21 @@ export class RuntimeService {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 1500);
 
-                const response = await fetch(`http://127.0.0.1:${port}`, {
+                let response = await fetch(`http://127.0.0.1:${port}`, {
                     method: "GET",
                     signal: controller.signal,
-                });
+                }).catch(() => null);
+
+                if (!response) {
+                    response = await fetch(`http://localhost:${port}`, {
+                        method: "GET",
+                        signal: controller.signal,
+                    }).catch(() => null);
+                }
 
                 clearTimeout(timeoutId);
 
-                if (response.status < 600) {
+                if (response && response.status < 600) {
                     await log(`Application health check succeeded on port ${port} (status ${response.status}).`);
                     return;
                 }
@@ -115,7 +142,7 @@ export class RuntimeService {
      * verifies HTTP health, and registers the active process.
      */
     async startApplication(options: StartApplicationOptions): Promise<RunningProcessInfo> {
-        const { deploymentId, projectId, workDir, repoRoot, port, startCommand, onLog } = options;
+        const { deploymentId, projectId, workDir, repoRoot, port, startCommand, envVars, onLog } = options;
 
         const log = async (msg: string) => {
             console.log(`[RuntimeService] [Deployment ${deploymentId}] ${msg}`);
@@ -128,42 +155,68 @@ export class RuntimeService {
         let child: ChildProcess;
         const customStart = startCommand?.trim();
 
-        // 1. Determine execution strategy: configured startCommand vs package.json "start" script
-        if (customStart && customStart.length > 0) {
-            await log(`Starting application using configured start command: "${customStart}" on port ${port}...`);
+        const processEnv = {
+            ...process.env,
+            ...(envVars || {}),
+            PORT: String(port),
+            NODE_ENV: "production",
+        };
 
-            child = spawn(customStart, {
+        // 1. Determine execution strategy: configured startCommand vs package.json "start" script vs static build
+        if (customStart && customStart.length > 0) {
+            let resolvedCommand = customStart
+                .replace(/\$PORT\b/g, String(port))
+                .replace(/%PORT%/g, String(port));
+
+            // If the command is an npm/vite script without explicit port flags, forward the allocated port
+            if (!resolvedCommand.includes("--port") && !resolvedCommand.includes("-p ") && !resolvedCommand.includes("-l ")) {
+                if (resolvedCommand.startsWith("npm run dev") || resolvedCommand.startsWith("npm run preview")) {
+                    resolvedCommand = `${resolvedCommand} -- --port ${port} --host 0.0.0.0`;
+                } else if (resolvedCommand.startsWith("vite") || resolvedCommand.startsWith("npx vite")) {
+                    resolvedCommand = `${resolvedCommand} --port ${port} --host 0.0.0.0`;
+                } else if (resolvedCommand.startsWith("serve") || resolvedCommand.startsWith("npx serve")) {
+                    resolvedCommand = `${resolvedCommand} -l ${port}`;
+                }
+            }
+
+            await log(`Starting application using configured start command: "${resolvedCommand}" on port ${port}...`);
+
+            child = spawn(resolvedCommand, {
                 cwd: workDir,
                 windowsHide: true,
                 shell: true,
-                env: {
-                    ...process.env,
-                    PORT: String(port),
-                    NODE_ENV: "production",
-                },
+                env: processEnv,
             });
         } else {
             const startScript = await this.getStartScript(workDir);
 
-            if (!startScript) {
-                const failMsg = "Cannot start application: no startCommand configured on project and no 'start' script found in package.json.";
-                await log(failMsg);
-                throw new Error(failMsg);
+            if (startScript) {
+                await log(`Detected start script: "${startScript}". Initializing runtime on port ${port}...`);
+
+                const executable = isWindows ? "npm.cmd" : "npm";
+                child = spawn(executable, ["start"], {
+                    cwd: workDir,
+                    windowsHide: true,
+                    shell: isWindows,
+                    env: processEnv,
+                });
+            } else {
+                const staticDir = this.getStaticBuildDir(workDir);
+                if (staticDir) {
+                    await log(`Detected static site output directory '${staticDir}/'. Starting static file server on port ${port}...`);
+                    const serveCmd = `npx -y serve -s ${staticDir} -l ${port}`;
+                    child = spawn(serveCmd, {
+                        cwd: workDir,
+                        windowsHide: true,
+                        shell: true,
+                        env: processEnv,
+                    });
+                } else {
+                    const failMsg = "Cannot start application: no startCommand configured, no 'start' script in package.json, and no static output directory found.";
+                    await log(failMsg);
+                    throw new Error(failMsg);
+                }
             }
-
-            await log(`Detected start script: "${startScript}". Initializing runtime on port ${port}...`);
-
-            const executable = isWindows ? "npm.cmd" : "npm";
-            child = spawn(executable, ["start"], {
-                cwd: workDir,
-                windowsHide: true,
-                shell: isWindows,
-                env: {
-                    ...process.env,
-                    PORT: String(port),
-                    NODE_ENV: "production",
-                },
-            });
         }
 
         if (!child.pid) {

@@ -3,6 +3,8 @@ import { deploymentService, DeploymentError } from "../services/deployment.servi
 import { GitHubError } from "../services/github.service";
 import { DeploymentStatus } from "@prisma/client";
 
+import { logEmitter } from "../utils/logEmitter";
+
 const VALID_STATUSES: string[] = Object.values(DeploymentStatus);
 
 export class DeploymentController {
@@ -450,6 +452,126 @@ export class DeploymentController {
             res.status(500).json({
                 message: "Internal server error occurred while stopping deployment",
             });
+        }
+    }
+
+    /**
+     * GET /api/deployments/:id/logs/stream
+     * Server-Sent Events (SSE) live log streaming
+     */
+    async streamDeploymentLogs(req: Request, res: Response): Promise<void> {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                res.status(401).json({ message: "User not authenticated" });
+                return;
+            }
+
+            const deploymentId = this.parseId(req.params.id || req.params.deploymentId);
+            if (deploymentId === null) {
+                res.status(400).json({ message: "Invalid deployment ID parameter" });
+                return;
+            }
+
+            // Verify project ownership and fetch deployment
+            const deployment = await deploymentService.getDeploymentById(deploymentId, userId);
+            if (!deployment) {
+                res.status(404).json({ message: "Deployment not found" });
+                return;
+            }
+
+            // Set SSE headers
+            res.setHeader("Content-Type", "text/event-stream");
+            res.setHeader("Cache-Control", "no-cache");
+            res.setHeader("Connection", "keep-alive");
+            res.setHeader("X-Accel-Buffering", "no");
+            res.flushHeaders();
+
+            // Send existing historical logs first
+            const existingLogs = await deploymentService.getDeploymentLogs(deploymentId, userId);
+            for (const log of existingLogs) {
+                res.write(`data: ${JSON.stringify({ type: "log", message: log.message, createdAt: log.createdAt })}\n\n`);
+            }
+
+            // Send current status
+            res.write(`data: ${JSON.stringify({ type: "status", status: deployment.status })}\n\n`);
+
+            // If deployment is already terminal (SUCCESS or FAILED), close stream
+            if (deployment.status === DeploymentStatus.SUCCESS || deployment.status === DeploymentStatus.FAILED) {
+                res.write(`data: ${JSON.stringify({ type: "done", status: deployment.status })}\n\n`);
+                res.end();
+                return;
+            }
+
+            // Subscribe to live log events
+            const unsubscribeLog = logEmitter.subscribe(deploymentId, (data) => {
+                res.write(`data: ${JSON.stringify({ type: "log", message: data.message, createdAt: data.timestamp })}\n\n`);
+            });
+
+            // Also listen to status changes
+            const onStatusChange = (data: { deploymentId: number; status: string }) => {
+                if (data.deploymentId === deploymentId) {
+                    res.write(`data: ${JSON.stringify({ type: "status", status: data.status })}\n\n`);
+                    if (data.status === DeploymentStatus.SUCCESS || data.status === DeploymentStatus.FAILED) {
+                        res.write(`data: ${JSON.stringify({ type: "done", status: data.status })}\n\n`);
+                        cleanup();
+                        res.end();
+                    }
+                }
+            };
+            logEmitter.on(`status:${deploymentId}`, onStatusChange);
+
+            // Heartbeat to keep connection alive through proxies
+            const heartbeat = setInterval(() => {
+                res.write(": keepalive\n\n");
+            }, 15000);
+
+            const cleanup = () => {
+                clearInterval(heartbeat);
+                unsubscribeLog();
+                logEmitter.off(`status:${deploymentId}`, onStatusChange);
+            };
+
+            req.on("close", cleanup);
+        } catch (error: any) {
+            console.error("Stream deployment logs error:", error);
+            if (!res.headersSent) {
+                res.status(500).json({ message: "Error setting up log stream" });
+            }
+        }
+    }
+
+    /**
+     * POST /api/deployments/:id/rollback
+     * Rolls back a project to a specific historical deployment
+     */
+    async rollbackDeployment(req: Request, res: Response): Promise<void> {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                res.status(401).json({ message: "User not authenticated" });
+                return;
+            }
+
+            const deploymentId = this.parseId(req.params.id || req.params.deploymentId);
+            if (deploymentId === null) {
+                res.status(400).json({ message: "Invalid deployment ID parameter" });
+                return;
+            }
+
+            const deployment = await deploymentService.rollbackDeployment(deploymentId, userId);
+
+            res.status(201).json({
+                message: "Rollback deployment triggered successfully",
+                deployment,
+            });
+        } catch (error: any) {
+            if (error instanceof DeploymentError || error instanceof GitHubError) {
+                res.status(error.statusCode).json({ message: error.message });
+                return;
+            }
+            console.error("Rollback deployment error:", error);
+            res.status(500).json({ message: "Internal server error occurred while rolling back" });
         }
     }
 }

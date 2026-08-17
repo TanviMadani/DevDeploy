@@ -166,9 +166,21 @@ export class GitService {
                 await log("Repository cloned using default branch.");
             }
 
+            let resolvedSha = commitHash;
+            try {
+                const { stdout: headSha } = await execFileAsync("git", ["rev-parse", "HEAD"], {
+                    cwd: workDir,
+                    windowsHide: true,
+                    env: gitEnv,
+                });
+                resolvedSha = headSha.trim();
+            } catch {
+                // Ignore if rev-parse fails
+            }
+
             return {
                 workDir,
-                commitHash,
+                commitHash: resolvedSha,
                 branch,
             };
         } catch (error: any) {

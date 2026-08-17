@@ -13,49 +13,119 @@ import { buildService } from "../services/build.service";
 import { runtimeService } from "../services/runtime.service";
 import { portService } from "../services/port.service";
 
-/**
- * Resolves and securely validates the deployment working directory based on the project rootDirectory.
- * Prevents path traversal outside the cloned workspace root.
- */
-export function resolveDeploymentDirectory(repoRoot: string, rootDirectory?: string | null): string {
-    if (!rootDirectory || rootDirectory.trim().length === 0) {
-        return repoRoot;
-    }
+import { envService } from "../services/env.service";
+import { logEmitter } from "../utils/logEmitter";
 
-    const trimmed = rootDirectory.trim();
-    // Resolve target path relative to repoRoot
-    const targetPath = path.resolve(repoRoot, trimmed);
-    const relative = path.relative(repoRoot, targetPath);
-
-    // Path traversal check: must not escape repoRoot (relative path starts with '..' or is absolute path outside)
-    if (relative.startsWith("..") || path.isAbsolute(relative)) {
-        throw new Error(`Invalid rootDirectory '${trimmed}': directory traversal outside repository workspace is not allowed.`);
-    }
-
-    // Verify existence
-    if (!fs.existsSync(targetPath)) {
-        throw new Error(`Configured rootDirectory '${trimmed}' does not exist in the repository.`);
-    }
-
-    const stat = fs.statSync(targetPath);
-    if (!stat.isDirectory()) {
-        throw new Error(`Configured rootDirectory '${trimmed}' is not a directory.`);
-    }
-
-    return targetPath;
+export interface ResolvedDirectoryResult {
+    workDir: string;
+    autoDetected?: string;
 }
 
 /**
- * Persists a log entry for a specific deployment in the database.
+ * Resolves and securely validates the deployment working directory based on the project rootDirectory.
+ * If not specified, automatically detects project subdirectories containing package.json or index.html.
+ * Prevents path traversal outside the cloned workspace root.
+ */
+export function resolveDeploymentDirectory(
+    repoRoot: string,
+    rootDirectory?: string | null
+): ResolvedDirectoryResult {
+    if (rootDirectory && rootDirectory.trim().length > 0 && rootDirectory.trim() !== "./" && rootDirectory.trim() !== ".") {
+        const trimmed = rootDirectory.trim();
+        // Resolve target path relative to repoRoot
+        const targetPath = path.resolve(repoRoot, trimmed);
+        const relative = path.relative(repoRoot, targetPath);
+
+        // Path traversal check: must not escape repoRoot
+        if (relative.startsWith("..") || path.isAbsolute(relative)) {
+            throw new Error(`Invalid rootDirectory '${trimmed}': directory traversal outside repository workspace is not allowed.`);
+        }
+
+        // Verify existence
+        if (!fs.existsSync(targetPath)) {
+            throw new Error(`Configured rootDirectory '${trimmed}' does not exist in the repository.`);
+        }
+
+        const stat = fs.statSync(targetPath);
+        if (!stat.isDirectory()) {
+            throw new Error(`Configured rootDirectory '${trimmed}' is not a directory.`);
+        }
+
+        return { workDir: targetPath };
+    }
+
+    // Check if root already has package.json or index.html
+    const rootPackageJson = path.join(repoRoot, "package.json");
+    const rootIndexHtml = path.join(repoRoot, "index.html");
+    if (fs.existsSync(rootPackageJson) || fs.existsSync(rootIndexHtml)) {
+        return { workDir: repoRoot };
+    }
+
+    // Scan subdirectories for package.json or index.html
+    try {
+        const entries = fs.readdirSync(repoRoot, { withFileTypes: true });
+        const candidateDirs: string[] = [];
+
+        for (const entry of entries) {
+            if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules" && entry.name !== "dist" && entry.name !== "build") {
+                const subDir = path.join(repoRoot, entry.name);
+                if (fs.existsSync(path.join(subDir, "package.json")) || fs.existsSync(path.join(subDir, "index.html"))) {
+                    candidateDirs.push(entry.name);
+                }
+            }
+        }
+
+        if (candidateDirs.length === 1) {
+            const detected = candidateDirs[0];
+            return {
+                workDir: path.join(repoRoot, detected),
+                autoDetected: detected,
+            };
+        }
+
+        if (candidateDirs.length > 1) {
+            // Prioritize frontend/client naming conventions
+            const preferred = candidateDirs.find((dir) =>
+                /^(frontend|client|web|ui|app|.*-frontend|.*-client|.*-web)$/i.test(dir)
+            );
+            if (preferred) {
+                return {
+                    workDir: path.join(repoRoot, preferred),
+                    autoDetected: preferred,
+                };
+            }
+            // Default to first matching candidate
+            return {
+                workDir: path.join(repoRoot, candidateDirs[0]),
+                autoDetected: candidateDirs[0],
+            };
+        }
+
+        // List all directory names found to help the user
+        const allDirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith(".")).map((e) => e.name);
+        const subMsg = allDirs.length > 0 ? ` Found directories: [${allDirs.join(", ")}].` : "";
+        throw new Error(`Project inspection failed: no package.json or index.html found in repository root.${subMsg} Please set 'rootDirectory' in project settings.`);
+    } catch (err: any) {
+        if (err.message.includes("Project inspection failed")) {
+            throw err;
+        }
+        return { workDir: repoRoot };
+    }
+}
+
+/**
+ * Persists a log entry for a specific deployment in the database and broadcasts via SSE logEmitter.
  */
 async function addDeploymentLog(deploymentId: number, message: string): Promise<void> {
     try {
+        const sanitized = sanitizeLog(message);
         await prisma.deploymentLog.create({
             data: {
                 deploymentId,
-                message: sanitizeLog(message),
+                message: sanitized,
             },
         });
+        logEmitter.emitLog(deploymentId, sanitized);
     } catch (err: any) {
         console.error(`[Worker] Failed to persist log for deployment ${deploymentId}:`, err.message);
     }
@@ -91,14 +161,22 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
                 return { skipped: true, reason: `Deployment with ID ${deploymentId} not found in database` };
             }
 
+            // Load project environment variables
+            const envMap = await envService.getProjectEnvMap(deployment.projectId);
+            const envCount = Object.keys(envMap).length;
+
             // Log: deployment started
             await addDeploymentLog(deploymentId, `Deployment started for project '${deployment.project.name}'`);
+            if (envCount > 0) {
+                await addDeploymentLog(deploymentId, `Loaded ${envCount} project environment variable(s).`);
+            }
 
             // Update status to BUILDING
             await prisma.deployment.update({
                 where: { id: deploymentId },
                 data: { status: DeploymentStatus.BUILDING },
             });
+            logEmitter.emitStatus(deploymentId, DeploymentStatus.BUILDING);
 
             // Log: status changed to BUILDING
             await addDeploymentLog(deploymentId, "Deployment status changed to BUILDING");
@@ -117,16 +195,29 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
 
             repoRoot = checkoutResult.workDir;
 
-            // Resolve effective working directory from project rootDirectory setting
-            const effectiveWorkDir = resolveDeploymentDirectory(
+            if (checkoutResult.commitHash && !deployment.commitHash) {
+                await prisma.deployment.update({
+                    where: { id: deploymentId },
+                    data: { commitHash: checkoutResult.commitHash },
+                });
+            }
+
+            // Resolve effective working directory from project rootDirectory setting or auto-detection
+            const resolved = resolveDeploymentDirectory(
                 repoRoot,
                 deployment.project.rootDirectory
             );
+            const effectiveWorkDir = resolved.workDir;
 
-            if (deployment.project.rootDirectory && deployment.project.rootDirectory.trim().length > 0) {
+            if (deployment.project.rootDirectory && deployment.project.rootDirectory.trim().length > 0 && deployment.project.rootDirectory.trim() !== "./") {
                 await addDeploymentLog(
                     deploymentId,
                     `Using configured rootDirectory: '${deployment.project.rootDirectory.trim()}'`
+                );
+            } else if (resolved.autoDetected) {
+                await addDeploymentLog(
+                    deploymentId,
+                    `Auto-detected project directory: '${resolved.autoDetected}'`
                 );
             }
 
@@ -135,6 +226,7 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
                 deploymentId,
                 workDir: effectiveWorkDir,
                 buildCommand: deployment.project.buildCommand,
+                envVars: envMap,
                 onLog: async (message: string) => {
                     await addDeploymentLog(deploymentId, message);
                 },
@@ -145,6 +237,7 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
                 where: { id: deploymentId },
                 data: { status: DeploymentStatus.RUNNING },
             });
+            logEmitter.emitStatus(deploymentId, DeploymentStatus.RUNNING);
             await addDeploymentLog(deploymentId, "Deployment status changed to RUNNING");
 
             // Stage 3: Allocate dynamic TCP port
@@ -159,6 +252,7 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
                 repoRoot,
                 port: allocatedPort,
                 startCommand: deployment.project.startCommand,
+                envVars: envMap,
                 onLog: async (message: string) => {
                     await addDeploymentLog(deploymentId, message);
                 },
@@ -179,6 +273,7 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
                     deploymentUrl,
                 },
             });
+            logEmitter.emitStatus(deploymentId, DeploymentStatus.SUCCESS);
 
             // Log URL assignment and completion
             await addDeploymentLog(deploymentId, `Deployment URL assigned: ${deploymentUrl}`);
@@ -207,6 +302,7 @@ export const deploymentWorker = new Worker<DeploymentJobData>(
                     where: { id: deploymentId },
                     data: { status: DeploymentStatus.FAILED },
                 });
+                logEmitter.emitStatus(deploymentId, DeploymentStatus.FAILED);
                 console.log(`[Worker] Deployment ${deploymentId} marked as FAILED`);
             } catch (dbError: any) {
                 console.error(`[Worker] Failed to update deployment ${deploymentId} to FAILED:`, dbError.message || "Unknown error");
