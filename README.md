@@ -234,11 +234,6 @@ npm run dev
 
 ---
 
-## 🛡️ License
-
-Distributed under the **MIT License**. See `LICENSE` for more information.
-
----
 
 <p align="center">
   Crafted with ❤️ by <strong>Tanvi Madani</strong> • Powered by DevDeploy
